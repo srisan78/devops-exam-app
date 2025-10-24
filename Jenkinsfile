@@ -50,10 +50,10 @@ pipeline {
         stage('Deploy with Docker Compose') {
             steps {
                 sh '''
-                // Clean up any existing containers
+                #Clean up any existing containers
                 docker compose down --remove-orphans || true
 
-                // Start services
+                #Start services
                 docker compose up -d
 
                 echo "Waiting for MySQL to be ready..."
