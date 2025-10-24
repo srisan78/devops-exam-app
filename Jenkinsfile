@@ -1,26 +1,32 @@
-
 pipeline {
     agent any
 
     environment {
         DOCKER_IMAGE = "sridhar76/devopsexamapp:latest"
-        EKS_CLUSTER = "devopsapp"
-        K8S_NAMESPACE = "devopsexamapp"
-        AWS_REGION = "us-west-2"  // Update to your region
     }
 
     stages {
         stage('Git Checkout') {
             steps {
-                git url: 'https://github.com/srisan78/devops-exam-app.git',
-                    branch: 'master'
+                git url: 'https://github.com/srisan78/devops-exam-app.git', branch: 'master'
             }
         }
 
         stage('Verify Docker Compose') {
             steps {
                 sh '''
-                docker compose version || { echo "Docker Compose not available"; exit 1; }
+                if ! command -v docker >/dev/null 2>&1; then
+                  echo "docker not found"
+                  exit 1
+                fi
+
+                # Accept either "docker compose" (new CLI) or "docker-compose" (legacy)
+                if ! docker compose version >/dev/null 2>&1 && ! docker-compose version >/dev/null 2>&1; then
+                  echo "Docker Compose not available"
+                  exit 1
+                fi
+
+                docker --version
                 '''
             }
         }
@@ -29,7 +35,8 @@ pipeline {
             steps {
                 dir('backend') {
                     script {
-                        withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
+                        // Ensure we are logged in to the registry while building (if required)
+                        withDockerRegistry([credentialsId: 'docker', url: 'https://index.docker.io/v1/']) {
                             sh "docker build -t ${DOCKER_IMAGE} ."
                         }
                     }
@@ -40,7 +47,7 @@ pipeline {
         stage('Push to Docker Hub') {
             steps {
                 script {
-                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
+                    withDockerRegistry([credentialsId: 'docker', url: 'https://index.docker.io/v1/']) {
                         sh "docker push ${DOCKER_IMAGE}"
                     }
                 }
@@ -49,23 +56,24 @@ pipeline {
 
         stage('Deploy with Docker Compose') {
             steps {
-                sh '''
-                #Clean up any existing containers
-                docker compose down --remove-orphans || true
-
-                #Start services
-                docker compose up -d
-
-                echo "Waiting for MySQL to be ready..."
-                timeout 120s bash -c '
-                while ! docker compose exec -T mysql mysqladmin ping -uroot -prootpass --silent;
-                do
-                    sleep 5;
-                    docker compose logs mysql --tail=5 || true;
-                done'
-
-                sleep 10
-                '''
+                script {
+                    // Stop any previous run, then start services and wait for MySQL
+                    sh '''
+                    set -o errexit
+                    docker compose down --remove-orphans || true
+                    docker compose up -d
+                    '''
+                    timeout(time: 120, unit: 'SECONDS') {
+                        sh '''
+                        echo "Waiting for MySQL to be ready..."
+                        until docker compose exec -T mysql mysqladmin ping -uroot -prootpass --silent >/dev/null 2>&1; do
+                          sleep 5
+                          docker compose logs mysql --tail=5 || true
+                        done
+                        '''
+                    }
+                    sh 'sleep 5'
+                }
             }
         }
 
@@ -78,51 +86,6 @@ pipeline {
                 curl -I http://localhost:5000 || true
                 '''
             }
-        }
-
-        stage('Deploy to EKS') {
-            steps {
-                script {
-                    withCredentials([[
-                        $class: 'AmazonWebServicesCredentialsBinding',
-                        credentialsId: 'aws-creds',
-                        accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                        secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
-                    ]]) {
-                        sh """
-                        aws eks update-kubeconfig --name ${EKS_CLUSTER} --region ${AWS_REGION}
-
-                        kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-
-                        kubectl create secret docker-registry dockerhub-creds \
-                            --docker-server=https://index.docker.io/v1/ \
-                            --docker-username=kastrov \
-                            --docker-password=\$(cat /var/jenkins_home/docker-creds/password) \
-                            --namespace=${K8S_NAMESPACE} \
-                            --dry-run=client -o yaml | kubectl apply -f -
-
-                        kubectl apply -f deployment.yml
-                        kubectl apply -f service.yml
-
-                        kubectl rollout status deployment/devopsexamapp -n ${K8S_NAMESPACE}
-                        """
-                    }
-                }
-            }
-        }
-    }
-
-    post {
-        success {
-            echo '🚀 Deployment successful!'
-            sh 'docker compose ps'
-        }
-        failure {
-            echo '❗ Pipeline failed. Check logs above.'
-            sh 'docker compose logs --tail=50 || true'
-        }
-        always {
-            sh 'docker compose logs --tail=20 || true'
         }
     }
 }
