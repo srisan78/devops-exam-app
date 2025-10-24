@@ -29,7 +29,7 @@ pipeline {
             steps {
                 dir('backend') {
                     script {
-                        withDockerRegistry(credentialsId: 'Docker', toolName: 'docker') {
+                        withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
                             sh "docker build -t ${DOCKER_IMAGE} ."
                         }
                     }
@@ -40,7 +40,7 @@ pipeline {
         stage('Push to Docker Hub') {
             steps {
                 script {
-                    withDockerRegistry(credentialsId: 'Docker', toolName: 'docker') {
+                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
                         sh "docker push ${DOCKER_IMAGE}"
                     }
                 }
